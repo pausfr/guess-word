@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>무한 단어맞추기</title>
+<style>
+  :root {
+    --bg: #121213; --fg: #fff; --empty: #3a3a3c; --key: #818384;
+    --green: #538d4e; --yellow: #b59f3b; --gray: #3a3a3c;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif; }
+  #app { max-width: 260px; margin: 0 auto; height: 100%; display: flex; flex-direction: column;
+    padding: 4px 4px 6px; }
+  header { text-align: center; border-bottom: 1px solid var(--empty); padding: 2px 0 4px; }
+  h1 { margin: 0; font-size: 13px; letter-spacing: .5px; }
+  #status { min-height: 16px; text-align: center; margin: 4px 0 2px; font-size: 11px; }
+  #board { display: grid; grid-template-rows: repeat(5, auto); gap: 3px; margin: 2px auto; width: 100%; }
+  .row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
+  .row.shake { animation: shake .4s; }
+  @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+  .tile { height: 34px; border: 1px solid var(--empty); display: flex; align-items: center;
+    justify-content: center; font-size: 17px; font-weight: 700; user-select: none; }
+  .tile.filled { border-color: #565758; }
+  .tile.green, .tile.yellow, .tile.gray { border-color: transparent; animation: flip .5s both; }
+  @keyframes flip { 0% { transform: rotateX(0); } 50% { transform: rotateX(90deg); } 100% { transform: rotateX(0); } }
+  .green { background: var(--green); } .yellow { background: var(--yellow); } .gray { background: var(--gray); }
+  #result { text-align: center; }
+  #result .answer { font-size: 12px; margin: 3px 0; }
+  button { font-family: inherit; color: var(--fg); border: 0; cursor: pointer; }
+  #again { background: var(--green); font-size: 12px; padding: 4px 14px; border-radius: 4px; margin: 2px 0 4px; }
+  #kb { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+  .krow { display: flex; justify-content: center; gap: 2px; }
+  .key { flex: 1; max-width: 26px; height: 28px; border-radius: 3px; background: var(--key);
+    font-size: 12px; font-weight: 600; padding: 0; }
+  .key.wide { flex: 1.6; max-width: 38px; font-size: 10px; }
+  .key.green { background: var(--green); } .key.yellow { background: var(--yellow); }
+  .key.gray { background: #3a3a3c; }
+  .key:active { filter: brightness(1.3); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><h1>무한 단어맞추기</h1></header>
+  <div id="status"></div>
+  <div id="board"></div>
+  <div id="result" class="hidden">
+    <div class="answer"></div>
+    <button id="again">다시 하기</button>
+  </div>
+  <div id="kb"></div>
+</div>
+<script src="words.js"></script>
+<script>
+const ROWS = 5, COLS = 5;
+const KB_LAYOUT = [
+  ["ㅂ","ㅈ","ㄷ","ㄱ","ㅅ","ㅛ","ㅕ","ㅑ"],
+  ["ㅁ","ㄴ","ㅇ","ㄹ","ㅎ","ㅗ","ㅓ","ㅏ","ㅣ"],
+  ["ENTER","ㅋ","ㅌ","ㅊ","ㅍ","ㅠ","ㅜ","ㅡ","⌫"],
+];
+const VALID = new Set("ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ");
+// 두벌식 물리 키 위치 → 기본 자모 (ㅐ/ㅔ 위치는 입력 불가). IME 상태와 무관하게 동작.
+const CODE_MAP = {
+  KeyQ:"ㅂ",KeyW:"ㅈ",KeyE:"ㄷ",KeyR:"ㄱ",KeyT:"ㅅ",KeyY:"ㅛ",KeyU:"ㅕ",KeyI:"ㅑ",
+  KeyA:"ㅁ",KeyS:"ㄴ",KeyD:"ㅇ",KeyF:"ㄹ",KeyG:"ㅎ",KeyH:"ㅗ",KeyJ:"ㅓ",KeyK:"ㅏ",KeyL:"ㅣ",
+  KeyZ:"ㅋ",KeyX:"ㅌ",KeyC:"ㅊ",KeyV:"ㅍ",KeyB:"ㅠ",KeyN:"ㅜ",KeyM:"ㅡ",
+};
+const RANK = { gray: 1, yellow: 2, green: 3 };
+
+let deck = [], answer, guesses, current, over, keyState;
+
+const $ = s => document.querySelector(s);
+const board = $("#board"), statusEl = $("#status"), resultEl = $("#result");
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function nextWord() {
+  if (!deck.length) deck = shuffle(WORDS.map((_, i) => i)); // 세션 내 중복 제외, 소진 시 재셔플
+  return WORDS[deck.pop()];
+}
+
+// Wordle 방식 판정: 초록 먼저, 남은 자모 개수로 노랑 처리
+function score(guess, target) {
+  const res = Array(COLS).fill("gray"), left = {};
+  for (let i = 0; i < COLS; i++) {
+    if (guess[i] === target[i]) res[i] = "green";
+    else left[target[i]] = (left[target[i]] || 0) + 1;
+  }
+  for (let i = 0; i < COLS; i++) {
+    if (res[i] === "green") continue;
+    if (left[guess[i]] > 0) { res[i] = "yellow"; left[guess[i]]--; }
+  }
+  return res;
+}
+
+function buildBoard() {
+  board.innerHTML = "";
+  for (let r = 0; r < ROWS; r++) {
+    const row = document.createElement("div");
+    row.className = "row";
+    for (let c = 0; c < COLS; c++) {
+      const t = document.createElement("div");
+      t.className = "tile";
+      row.appendChild(t);
+    }
+    board.appendChild(row);
+  }
+}
+function buildKeyboard() {
+  const kb = $("#kb");
+  kb.innerHTML = "";
+  for (const line of KB_LAYOUT) {
+    const row = document.createElement("div");
+    row.className = "krow";
+    for (const k of line) {
+      const b = document.createElement("button");
+      b.className = "key" + (k.length > 1 || k === "⌫" ? " wide" : "");
+      b.textContent = k === "ENTER" ? "제출" : k;
+      b.dataset.key = k;
+      b.addEventListener("click", () => press(k));
+      row.appendChild(b);
+    }
+    kb.appendChild(row);
+  }
+}
+
+function render() {
+  const rows = board.children;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const t = rows[r].children[c];
+      if (r < guesses.length) {
+        t.textContent = guesses[r].g[c];
+        t.className = "tile " + guesses[r].s[c];
+        t.style.animationDelay = guesses[r].fresh ? c * 0.12 + "s" : "0s";
+      } else if (r === guesses.length) {
+        t.textContent = current[c] || "";
+        t.className = "tile" + (current[c] ? " filled" : "");
+      } else { t.textContent = ""; t.className = "tile"; }
+    }
+  }
+  guesses.forEach(g => g.fresh = false);
+  for (const b of document.querySelectorAll(".key")) {
+    b.classList.remove("green", "yellow", "gray");
+    if (keyState[b.dataset.key]) b.classList.add(keyState[b.dataset.key]);
+  }
+}
+function say(msg) { statusEl.textContent = msg; }
+function remaining() { return ROWS - guesses.length; }
+
+function press(k) {
+  if (over) return;
+  if (k === "ENTER") return submit();
+  if (k === "⌫") { current.pop(); render(); return; }
+  if (VALID.has(k) && current.length < COLS) { current.push(k); say(`남은 기회: ${remaining()}번`); render(); }
+}
+function submit() {
+  if (current.length < COLS) {
+    say("자모 5개를 모두 입력하세요");
+    const row = board.children[guesses.length];
+    row.classList.remove("shake"); void row.offsetWidth; row.classList.add("shake");
+    return;
+  }
+  const s = score(current, answer[1]);
+  guesses.push({ g: current, s, fresh: true });
+  current.forEach((j, i) => {
+    if (!keyState[j] || RANK[s[i]] > RANK[keyState[j]]) keyState[j] = s[i];
+  });
+  const won = s.every(x => x === "green");
+  current = [];
+  if (won || guesses.length === ROWS) {
+    over = true;
+    say(won ? "🎉 정답입니다!" : "아쉽네요, 기회를 모두 사용했어요");
+    resultEl.querySelector(".answer").textContent = `정답: ${answer[0]} (${answer[1].join(" ")})`;
+    resultEl.classList.remove("hidden");
+  } else say(`남은 기회: ${remaining()}번`);
+  render();
+}
+
+function newGame() {
+  answer = nextWord();
+  guesses = []; current = []; over = false; keyState = {};
+  resultEl.classList.add("hidden");
+  say(`남은 기회: ${ROWS}번`);
+  render();
+}
+
+document.addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (over) newGame(); else press("ENTER");
+  } else if (e.key === "Backspace") { e.preventDefault(); press("⌫"); }
+  else if (CODE_MAP[e.code]) { e.preventDefault(); press(CODE_MAP[e.code]); }
+});
+$("#again").addEventListener("click", newGame);
+
+buildBoard(); buildKeyboard(); newGame();
+</script>
+</body>
+</html>
